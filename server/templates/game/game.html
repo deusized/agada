@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{% static 'css/game.css' %}">
+{% endblock %}
+
+{% block content %}
+<div class="game-container" data-room-id="{{ room_id }}">
+    <div class="game-info">
+        <div class="trump-card">Козырь: <span id="trump-suit"></span></div>
+        <div class="current-turn">Ход: <span id="current-player"></span></div>
+    </div>
+    
+    <div class="opponent-hand" id="opponent-hand"></div>
+    
+    <div class="game-table" id="game-table"></div>
+    
+    <div class="player-hand" id="player-hand"></div>
+    
+    <div class="game-controls">
+        <button id="take-cards-btn">Взять карты</button>
+        <button id="end-turn-btn">Завершить ход</button>
+    </div>
+    
+    <div class="game-chat">
+        <div class="chat-messages" id="chat-messages"></div>
+        <input type="text" id="chat-input" placeholder="Сообщение...">
+        <button id="send-chat-btn">Отправить</button>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/game.js' %}"></script>
+{% endblock %}
