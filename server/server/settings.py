@@ -37,6 +37,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django.contrib.humanize',
     'rest_framework',
     'channels',
     'game',
@@ -138,3 +139,7 @@ ASGI_APPLICATION = 'server.asgi.application'
 LOGIN_REDIRECT_URL = 'lobby'
 
 LOGOUT_REDIRECT_URL = 'login'
+
+USE_TZ = True
+
+TIME_ZONE = 'Europe/Moscow'  # Или ваш часовой пояс

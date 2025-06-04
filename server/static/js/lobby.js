@@ -33,8 +33,8 @@ $(document).ready(function() {
               'X-CSRFToken': getCookie('csrftoken')
           },
           success: function(data) {
-              if (data.success) {
-                  window.location.href = '/game/' + data.room_id + '/';
+              if (data.success && data.redirect_url) {
+                window.location.href = data.redirect_url;
               } else {
                   alert('Ошибка: ' + (data.error || 'Не удалось создать игру'));
                   btn.prop('disabled', false).text('Создать игру');

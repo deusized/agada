@@ -1,11 +1,69 @@
 from django.http import JsonResponse
 from django.contrib.auth.decorators import login_required
+from django.utils import timezone
+from django.contrib.humanize.templatetags.humanize import naturaltime
 from .models import GameRoom, Game
 from django.db import models
 from django.db.models import Count
 import random
-from django.shortcuts import render, redirect
-from .game_logic import initialize_game  # Импортируем игровую логику
+from django.shortcuts import render, get_object_or_404
+from .game_logic import initialize_game
+from django.views.decorators.cache import cache_page
+from django.core.cache import cache
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+@login_required
+def game_room(request, room_id):
+    room = get_object_or_404(GameRoom, id=room_id)
+    game = get_object_or_404(Game, room=room)
+    
+    return render(request, 'game/game_room.html', {
+        'room': room,
+        'game': game
+    })
+
+
+@cache_page(5)
+def list_games(request):
+    try:
+        games = GameRoom.objects.annotate(
+            players_count=Count('players')
+        ).filter(
+            is_active=False
+        ).values('id', 'name', 'players_count', 'max_players', 'created_at')[:50]
+        
+        
+        games_data = []
+        for game in games:
+            game_data = {
+                'id': game['id'],
+                'name': game['name'],
+                'players': game['players_count'],
+                'max_players': game['max_players'],
+                'created_ago': naturaltime(game['created_at']),
+                'status': 'waiting'
+            }
+            games_data.append(game_data)
+        
+        return JsonResponse({
+            'success': True,
+            'games': games_data,
+            'timestamp': timezone.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Ошибка при загрузке списка игр: {str(e)}", exc_info=True)
+        cache_key = 'fallback_games_list'
+        fallback_data = cache.get(cache_key, {'games': [], 'cached': True})
+        return JsonResponse({
+            'success': False,
+            'games': fallback_data['games'],
+            'error': 'Ошибка загрузки. Показаны кешированные данные.',
+            'cached': fallback_data['cached']
+        }, status=200)
 
 @login_required
 def lobby_view(request):
@@ -43,7 +101,8 @@ def create_game(request):
         return JsonResponse({
             'success': True,
             'room_id': game_room.id,
-            'game_id': game.id
+            'game_id': game.id,
+            'redirect_url': f'/game/{game.id}/'
         })
     return JsonResponse({'error': 'Invalid method'}, status=400)
 

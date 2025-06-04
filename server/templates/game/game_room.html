@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="game-room">
+    <div id="player-counter">
+        Игроков онлайн: <span id="active-players">{{ room.active_players }}</span>/{{ room.max_players }}
+    </div>
+    <!-- остальной интерфейс игры -->
+</div>
+
+<script>
+const gameSocket = new WebSocket(
+    `ws://${window.location.host}/ws/game/{{ room.id }}/`
+);
+
+// Отслеживаем активность (движение мыши, клавиатуру)
+document.addEventListener('mousemove', sendActivity);
+document.addEventListener('keypress', sendActivity);
+
+function sendActivity() {
+    if (gameSocket.readyState === WebSocket.OPEN) {
+        gameSocket.send(JSON.stringify({'type': 'activity'}));
+    }
+}
+
+// Обработка сообщений WebSocket
+gameSocket.onmessage = function(e) {
+    const data = JSON.parse(e.data);
+    if (data.type === 'player_count') {
+        document.getElementById('active-players').textContent = data.count;
+    }
+};
+
+// Отслеживаем закрытие вкладки/браузера
+window.addEventListener('beforeunload', function() {
+    gameSocket.close();
+});
+</script>
+{% endblock %}
