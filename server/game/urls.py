@@ -1,10 +1,11 @@
 from django.urls import path
 from . import views
-from .api import views as api_views
 
 urlpatterns = [
-    path('lobby/', views.lobby_view, name='lobby'),
-    path('game/<int:room_id>/', views.game_view, name='game'),
-    path('balance/', api_views.check_balance, name='check-balance'),
-    path('create-lobby/', api_views.create_lobby, name='create-lobby'),
+    path('', views.lobby_view, name='lobby'),
+    path('create/', views.create_game, name='create_game'),
+    path('find/', views.find_game, name='find-game'),
+    path('join/<int:game_id>/', views.join_game, name='join-game'),
+    path('start/<int:room_id>/', views.start_game, name='start_game'),
+    path('list/', views.list_games, name='list-games'),
 ]

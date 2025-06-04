@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block content %}
+<div class="game-create-container">
+    <h2>Создать новую игру</h2>
+    
+    <div class="game-settings">
+        <div class="setting-group">
+            <label for="game-name">Название игры:</label>
+            <input type="text" id="game-name" value="Игра {{ request.user.username }}" class="form-input">
+        </div>
+        
+        <div class="setting-group">
+            <label>Количество игроков:</label>
+            <div class="radio-group">
+                <label><input type="radio" name="players" value="2" checked> 2 игрока</label>
+                <label><input type="radio" name="players" value="3"> 3 игрока</label>
+                <label><input type="radio" name="players" value="4"> 4 игрока</label>
+            </div>
+        </div>
+        
+        <div class="setting-group">
+            <label>Тип игры:</label>
+            <select id="game-type" class="form-select">
+                <option value="classic">Классический дурак</option>
+                <option value="transfer">Переводной дурак</option>
+            </select>
+        </div>
+    </div>
+    
+    <button id="create-game-btn" class="btn btn-primary">Создать игру</button>
+</div>
+
+<script src="{% static 'js/create_game.js' %}"></script>
+{% endblock %}

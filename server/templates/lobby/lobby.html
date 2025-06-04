@@ -2,35 +2,27 @@
 {% load static %}
 
 {% block content %}
-<h1>Добро пожаловать в Дурак онлайн, {{ request.user.username }}!</h1>
+<div class="lobby-container">
+    <h1>Добро пожаловать, {{ request.user.username }}!</h1>
+    
+    <div class="lobby-actions">
+        <button id="create-lobby-btn" class="lobby-btn">Создать игру</button>
+        <button id="find-game-btn" class="lobby-btn">Найти игру</button>
+        <a href="{% url 'logout' %}" onclick="event.preventDefault(); document.getElementById('logout-form').submit();">
+            <button class="lobby-btn">Выйти</button>
+        </a>
+        
+        <form id="logout-form" action="{% url 'logout' %}" method="post" style="display: none;">
+            {% csrf_token %}
+        </form>
+    </div>
 
-<div class="menu-buttons">
-    <div class="btn" id="play-btn">Играть</div>
-    <div class="btn" id="settings-btn">Настройки</div>
-    <a href="{% url 'logout' %}" class="btn" id="logout-btn">Выход</a>
-</div>
-
-<div class="section" id="play-section">
-    <h2>Список лобби</h2>
-    <div id="lobbies">
-        {% for room in game_rooms %}
-        <div class="lobby" data-room-id="{{ room.id }}" onclick="joinLobby('{{ room.id }}')">
-            Лобби {{ room.id }} ({{ room.current_players }}/{{ room.max_players }} игроков)
+    <div class="active-games" id="active-games">
+        <h2>Доступные игры</h2>
+        <div class="games-list" id="games-list">
+            <!-- Сюда будут загружаться активные игры через AJAX -->
+            <div class="loading">Загрузка списка игр...</div>
         </div>
-        {% endfor %}
-    </div>
-    <div class="btn" id="create-lobby-btn">Создать своё лобби</div>
-</div>
-
-<div class="section" id="settings-section">
-    <h2>Настройки</h2>
-    <div class="settings-option">
-        <label for="music-volume">Музыка:</label>
-        <input type="range" id="music-volume" min="0" max="100" value="50">
-    </div>
-    <div class="settings-option">
-        <label for="sound-volume">Звук:</label>
-        <input type="range" id="sound-volume" min="0" max="100" value="50">
     </div>
 </div>
 {% endblock %}

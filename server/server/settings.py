@@ -25,7 +25,7 @@ SECRET_KEY = 'django-insecure-ff6)ux*xpbo7(_e+625_dh5hbp+976#=()*-oic2ybfz66v00f
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['*']
 
 
 # Application definition
@@ -70,7 +70,10 @@ TEMPLATES = [
     },
 ]
 
+STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
+
 STATIC_URL = '/static/'
+
 STATICFILES_DIRS = [os.path.join(BASE_DIR, 'static')]
 
 WSGI_APPLICATION = 'server.wsgi.application'
@@ -127,5 +130,11 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
 AUTH_USER_MODEL = 'players.Player'
+
 ASGI_APPLICATION = 'server.asgi.application'
+
+LOGIN_REDIRECT_URL = 'lobby'
+
+LOGOUT_REDIRECT_URL = 'login'
