@@ -4,28 +4,24 @@ import random
 import os
 from django.conf import settings
 from django.db import transaction
-from .models import Game, GameRoom # Game is the model for game state in DB
-from players.models import Player # <--- ИЗМЕНЕНИЕ: Явный импорт модели Player
+from .models import Game, GameRoom
+from players.models import Player
 import typing
 import logging
 
 logger = logging.getLogger(__name__)
-# User = get_user_model() # <--- УДАЛЕНО
 
 class DurakGame:
     def __init__(self, room: GameRoom):
         self.room = room
-        self.game_model_instance: typing.Optional[Game] = None # Instance of game.models.Game
-        self.players: list[Player] = list(room.players.all().order_by('id')) # <--- ИЗМЕНЕНИЕ: Player
+        self.game_model_instance: typing.Optional[Game] = None
+        self.players: list[Player] = list(room.players.all().order_by('id'))
         
-        # Default state for a game not yet fully initialized
         self.player_hands_data: dict[str, list[dict]] = {str(p.id): [] for p in self.players}
         self.deck: list[dict] = []
         self.trump_suit: typing.Optional[str] = None
         self.trump_card_revealed: typing.Optional[dict] = None
-        self.table: list[dict] = [] # Stores pairs of {'attack_card': card, 'defense_card': card_or_none}
-        
-        # Default attacker/defender indices
+        self.table: list[dict] = []
         self.attacker_index: int = 0
         self.defender_index: int = (self.attacker_index + 1) % len(self.players) if self.players else 0
         
@@ -49,16 +45,14 @@ class DurakGame:
             self.player_hands_data = dict(self.game_model_instance.player_hands)
             self.trump_card_revealed = self.game_model_instance.trump_card_revealed
 
-            # Determine current attacker from loaded state
             if self.game_model_instance.current_turn:
                 try:
                     current_turn_user_id = self.game_model_instance.current_turn.id
                     self.attacker_index = next(i for i, p in enumerate(self.players) if p.id == current_turn_user_id)
                 except (StopIteration, AttributeError):
                     logger.warning(f"Current turn player {self.game_model_instance.current_turn_id} not found in room {self.room.id} players. Re-determining attacker.")
-                    self._set_initial_attacker_defender() # Fallback: re-evaluate based on loaded hands
+                    self._set_initial_attacker_defender()
             else:
-                # If current_turn is None (e.g., game loaded but turn not set), determine attacker
                 self._set_initial_attacker_defender() 
             
             self.defender_index = (self.attacker_index + 1) % len(self.players) if self.players else 0
@@ -70,41 +64,31 @@ class DurakGame:
             logger.info(f"DurakGame state loaded from DB for room {self.room.id}")
 
         except Game.DoesNotExist:
-            # Game model doesn't exist. The game is in a pre-initialized state.
-            # Actual game setup (dealing cards) will happen when initialize_new_game_setup() is called.
             logger.info(f"No existing Game model for room {self.room.id}. DurakGame in pre-init state.")
             pass # State remains as defaults from __init__
 
     def initialize_new_game_setup(self):
-        """
-        Initializes a new game: deals cards, sets trump, determines first attacker,
-        and creates the Game model instance.
-        This should only be called ONCE when the game is formally started.
-        """
         if self.game_model_instance:
             logger.warning(f"initialize_new_game_setup called for room {self.room.id}, but Game model already exists. Skipping.")
             return
 
-        # Assuming min_players_for_start on room model or a default
         min_players = getattr(self.room, 'min_players_for_start', 2) 
         if not self.players or len(self.players) < min_players:
              logger.error(f"Not enough players ({len(self.players)}) to initialize game for room {self.room.id}. Needs {min_players}.")
-             return # Or raise error
+             return
 
         logger.info(f"Initializing new game setup for room {self.room.id} with {len(self.players)} players.")
         self.deck = self._generate_deck()
-        self.player_hands_data = {str(p.id): [] for p in self.players} # Ensure fresh hands dict
+        self.player_hands_data = {str(p.id): [] for p in self.players}
         
-        self._initialize_hands_and_trump() # Deals cards and sets trump_suit, trump_card_revealed
-        self._set_initial_attacker_defender() # Determines attacker_index based on new hands/trump
+        self._initialize_hands_and_trump()
+        self._set_initial_attacker_defender()
         
-        # Create and save the Game model instance
         self.game_model_instance = Game.objects.create(
             room=self.room,
-            status='active', # Initial status for a new game
-            # Other fields like current_turn, deck, hands, etc., will be set by save_game_state()
+            status=GameRoom.STATUS_PLAYING,
         )
-        self.save_game_state() # Persists the newly dealt hands, deck, trump, attacker etc.
+        self.save_game_state()
         logger.info(f"New game setup complete and saved for room {self.room.id}. Trump: {self.trump_suit}. Attacker: {self.players[self.attacker_index].username if self.players else 'N/A'}")
 
 
@@ -169,10 +153,10 @@ class DurakGame:
             logger.error(f"Cannot determine trump: deck empty and no cards dealt for room {self.room.id}.")
 
 
-    def _get_player_hand(self, player_user_obj: Player) -> list[dict]: # <--- ИЗМЕНЕНИЕ: Player
+    def _get_player_hand(self, player_user_obj: Player) -> list[dict]:
         return self.player_hands_data.get(str(player_user_obj.id), [])
 
-    def _remove_card_from_hand(self, player_user_obj: Player, card_index_in_hand: int) -> typing.Optional[dict]: # <--- ИЗМЕНЕНИЕ: Player
+    def _remove_card_from_hand(self, player_user_obj: Player, card_index_in_hand: int) -> typing.Optional[dict]:
         hand = self._get_player_hand(player_user_obj)
         if 0 <= card_index_in_hand < len(hand):
             removed_card = hand.pop(card_index_in_hand)
@@ -180,7 +164,7 @@ class DurakGame:
         logger.warning(f"Invalid card index {card_index_in_hand} for hand of player {player_user_obj.id}")
         return None
     
-    def _add_cards_to_hand(self, player_user_obj: Player, cards_to_add: list[dict]): # <--- ИЗМЕНЕНИЕ: Player
+    def _add_cards_to_hand(self, player_user_obj: Player, cards_to_add: list[dict]):
         hand = self._get_player_hand(player_user_obj)
         hand.extend(cards_to_add)
 
@@ -201,8 +185,8 @@ class DurakGame:
             return True
         return False
 
-    def attack(self, attacking_player_user: Player, card_indices: list[int]) -> dict: # <--- ИЗМЕНЕНИЕ: Player
-        if not self.game_model_instance or self.game_model_instance.status != 'active':
+    def attack(self, attacking_player_user: Player, card_indices: list[int]) -> dict:
+        if not self.game_model_instance or self.game_model_instance.status != GameRoom.STATUS_PLAYING:
             return {'success': False, 'message': "Игра не активна."}
         if not self.players or attacking_player_user != self.players[self.attacker_index]:
             return {'success': False, 'message': "Сейчас не ваш ход для атаки."}
@@ -243,6 +227,9 @@ class DurakGame:
                 if pair_on_table.get('defense_card'):
                     allowed_ranks_for_throw_in.add(pair_on_table['defense_card']['rank'])
             
+            logger.debug(f"Room {self.room.id} - Attempting to throw in. Allowed ranks: {allowed_ranks_for_throw_in}")
+            logger.debug(f"Room {self.room.id} - Cards to throw in: {[c['rank'] for c in cards_to_play_objects]}")
+
             if not all(c['rank'] in allowed_ranks_for_throw_in for c in cards_to_play_objects):
                 return {'success': False, 'message': "Карты для подкидывания должны совпадать по рангу с картами на столе."}
             
@@ -269,8 +256,8 @@ class DurakGame:
         return {'success': True, 'message': "Атака совершена."}
 
 
-    def defend(self, defending_player_user: Player, attack_card_table_index: int, defense_card_hand_index: int) -> dict: # <--- ИЗМЕНЕНИЕ: Player
-        if not self.game_model_instance or self.game_model_instance.status != 'active':
+    def defend(self, defending_player_user: Player, attack_card_table_index: int, defense_card_hand_index: int) -> dict:
+        if not self.game_model_instance or self.game_model_instance.status != GameRoom.STATUS_PLAYING:
             return {'success': False, 'message': "Игра не активна."}
         if not self.players or defending_player_user != self.players[self.defender_index]:
             return {'success': False, 'message': "Сейчас не ваш ход для защиты."}
@@ -304,10 +291,10 @@ class DurakGame:
             return {'success': False, 'message': "Этой картой нельзя отбиться."}
 
     def _deal_cards_after_round(self):
-        if not self.game_model_instance or self.game_model_instance.status != 'active':
+        if not self.game_model_instance or self.game_model_instance.status != GameRoom.STATUS_PLAYING:
             return
         
-        players_involved_in_round_needing_cards: list[Player] = [] # <--- ИЗМЕНЕНИЕ: Player
+        players_involved_in_round_needing_cards: list[Player] = []
         
         attacker_user = self.players[self.attacker_index]
         if len(self._get_player_hand(attacker_user)) < 6:
@@ -342,8 +329,8 @@ class DurakGame:
                 hand.append(card)
 
 
-    def take_cards_action(self, taking_player_user: Player) -> dict: # <--- ИЗМЕНЕНИЕ: Player
-        if not self.game_model_instance or self.game_model_instance.status != 'active':
+    def take_cards_action(self, taking_player_user: Player) -> dict:
+        if not self.game_model_instance or self.game_model_instance.status != GameRoom.STATUS_PLAYING:
             return {'success': False, 'message': "Игра не активна."}
         if not self.players or taking_player_user != self.players[self.defender_index]:
             return {'success': False, 'message': "Только защищающийся игрок может взять карты."}
@@ -373,8 +360,8 @@ class DurakGame:
         self.save_game_state()
         return {'success': True, 'message': "Карты взяты."}
 
-    def pass_or_bito_action(self, acting_player_user: Player) -> dict: # <--- ИЗМЕНЕНИЕ: Player
-        if not self.game_model_instance or self.game_model_instance.status != 'active':
+    def pass_or_bito_action(self, acting_player_user: Player) -> dict:
+        if not self.game_model_instance or self.game_model_instance.status != GameRoom.STATUS_PLAYING:
             return {'success': False, 'message': "Игра не активна."}
         
         if not self.table:
@@ -407,7 +394,7 @@ class DurakGame:
 
         if not self.deck: 
             players_with_cards_count = 0
-            last_player_with_cards: typing.Optional[Player] = None # <--- ИЗМЕНЕНИЕ: Player
+            last_player_with_cards: typing.Optional[Player] = None
             
             for player_user in self.players: # player_user is Player
                 if self._get_player_hand(player_user): 
@@ -418,8 +405,8 @@ class DurakGame:
                 return {'game_over': True, 'is_draw': True, 'winner': None, 'loser': None, 'message': "Игра окончена! Ничья (все вышли одновременно)."}
             
             if players_with_cards_count == 1: 
-                loser: typing.Optional[Player] = last_player_with_cards # <--- ИЗМЕНЕНИЕ: Player
-                winner: typing.Optional[Player] = None # <--- ИЗМЕНЕНИЕ: Player
+                loser: typing.Optional[Player] = last_player_with_cards
+                winner: typing.Optional[Player] = None
                 
                 if len(self.players) == 2: 
                     winner = next((p for p in self.players if p != loser), None)
@@ -536,7 +523,7 @@ class DurakGame:
         with transaction.atomic():
             game = self.game_model_instance 
 
-            current_attacker_user: typing.Optional[Player] = self.players[self.attacker_index] if self.players and 0 <= self.attacker_index < len(self.players) else None # <--- ИЗМЕНЕНИЕ: Player
+            current_attacker_user: typing.Optional[Player] = self.players[self.attacker_index] if self.players and 0 <= self.attacker_index < len(self.players) else None
             game.current_turn = current_attacker_user
             game.trump_suit = self.trump_suit
             game.trump_card_revealed = self.trump_card_revealed
@@ -547,11 +534,11 @@ class DurakGame:
             is_game_truly_over = game_over_result and game_over_result.get('game_over', False)
 
             if is_game_truly_over:
-                game.status = 'finished'
+                game.status = GameRoom.STATUS_FINISHED
                 self.room.status = GameRoom.STATUS_FINISHED 
                 
-                winner_obj: typing.Optional[Player] = game_over_result.get('winner') # <--- ИЗМЕНЕНИЕ: Player
-                loser_obj: typing.Optional[Player] = game_over_result.get('loser')   # <--- ИЗМЕНЕНИЕ: Player
+                winner_obj: typing.Optional[Player] = game_over_result.get('winner')
+                loser_obj: typing.Optional[Player] = game_over_result.get('loser')  
                 is_draw = game_over_result.get('is_draw', False)
 
                 if hasattr(self.room, 'end_game_from_logic'): 
@@ -565,7 +552,7 @@ class DurakGame:
                 self.room.save(update_fields=['status', 'winner'] if winner_obj and not is_draw else ['status'])
 
             else: 
-                game.status = 'active'
+                game.status = GameRoom.STATUS_PLAYING
                 self.room.status = GameRoom.STATUS_PLAYING
                 if self.deck: 
                     for p_user in self.players: # p_user is Player

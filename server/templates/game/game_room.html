@@ -69,11 +69,6 @@
                 {% if p_state.cards %}
                 {% for card in p_state.cards %}
                 <div class="card-wrapper card-in-hand" data-hand-index="{{ card.hand_index }}">
-                    <!-- ДЛЯ ОТЛАДКИ: выводим все содержимое card -->
-                    <p style="font-size: 0.7em; background-color: #eee; padding: 2px; margin: 0;">
-                        DEBUG card data: {{ card|pprint }} <!-- Используем pprint или просто {{ card }} -->
-                    </p>
-                    <!-- КОНЕЦ ОТЛАДКИ -->
                     {% if card.image_url %}
                         <img src="{{ card.image_url }}" 
                              alt="{{ card.rank }} {{ card.suit }}" 
@@ -82,7 +77,6 @@
                     {% else %}
                         {{ card.rank }} {{ card.suit }}
                     {% endif %}
-                    <br><small>(idx: {{ card.hand_index }})</small>
                 </div>
             {% endfor %}
                 {% else %}
@@ -132,11 +126,12 @@
 
         {% if game_state.status == "playing" %}
             <div style="margin-top: 20px;">
-                {% if user.id == game_state.attacker_id or user.id == game_state.defender_id or True %} {# Упрощенно: кнопки видны всем, логика будет в JS/сервере #}
+                {% if user.id == game_state.attacker_id %}
                     <button id="action-pass-bito" class="btn">Пас / Бито</button>
-                    {% if user.id == game_state.defender_id or True %} {# Упрощенно #}
-                        <button id="action-take" class="btn">Взять карты</button>
-                    {% endif %}
+                {% endif %}
+
+                {% if user.id == game_state.defender_id %}
+                    <button id="action-take" class="btn">Взять карты</button>  
                 {% endif %}
             </div>
         {% endif %}
@@ -181,35 +176,97 @@
 
         const playerHandContainer = document.getElementById('player-hand');
 
-        if (playerHandContainer) {
-            playerHandContainer.addEventListener('click', function(event) {
-                let clickedCardWrapper = event.target.closest('.card-wrapper.card-in-hand');
-                
-                if (clickedCardWrapper) {
-                    const cardHandIndexStr = clickedCardWrapper.dataset.handIndex;
-                    if (cardHandIndexStr !== undefined) {
-                        const cardHandIndex = parseInt(cardHandIndexStr, 10);
-                        if (!isNaN(cardHandIndex)) {
-                            makeMoveClient(cardHandIndex);
-                        } else {
-                            console.error("Не удалось получить числовой индекс карты из data-атрибута:", cardHandIndexStr);
-                        }
-                    } else {
-                        console.error("Атрибут data-hand-index не найден у элемента .card-wrapper.card-in-hand");
-                    }
-                }
-            });
-        }
 
-        function makeMoveClient(cardHandIndex) {
-            if (USER_ID === null || ROOM_ID === null) {
-                console.error("User ID или Room ID не определены. Невозможно отправить ход.");
-                alert("Ошибка: данные пользователя или комнаты не загружены.");
-                return;
-            }
-            console.log(`Клиент: Игрок ${USER_ID} выбрал карту с индексом ${cardHandIndex} в комнате ${ROOM_ID}`);
-            alert(`Вы кликнули карту с индексом: ${cardHandIndex}. Отправка на сервер (через WebSocket) еще не реализована.`);
-        }
+                function makeMoveClient(actionType, payload = {}) {
+                    if (USER_ID === null || ROOM_ID === null) {
+                        console.error("User ID или Room ID не определены. Невозможно отправить ход.");
+                        alert("Ошибка: данные пользователя или комнаты не загружены.");
+                        return;
+                    }
+
+                    const url = `/game/room/${ROOM_ID}/make_move/`;
+                    const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]').value;
+
+                    const bodyData = {
+                        action_type: actionType,
+                        ...payload
+                    };
+
+                    console.log(`Клиент: Отправка действия "${actionType}" на сервер. Данные:`, bodyData);
+
+                    fetch(url, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-CSRFToken': csrfToken,
+                            'X-Requested-With': 'XMLHttpRequest'
+                        },
+                        body: JSON.stringify(bodyData)
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        console.log("Ответ от сервера:", data);
+                        if (data.success) {
+                            alert(data.message || `Действие "${actionType}" успешно выполнено.`);
+                            window.location.reload(); 
+                        } else {
+                            alert('Ошибка хода: ' + (data.error || data.message || 'Неизвестная ошибка.'));
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Сетевая ошибка при выполнении хода:', error);
+                        alert('Произошла сетевая ошибка при выполнении хода.');
+                    });
+                }
+
+                if (playerHandContainer) {
+                    playerHandContainer.addEventListener('click', function(event) {
+                        let clickedCardWrapper = event.target.closest('.card-wrapper.card-in-hand');
+                
+                        if (clickedCardWrapper) {
+                            const cardHandIndexStr = clickedCardWrapper.dataset.handIndex;
+                            if (cardHandIndexStr !== undefined && cardHandIndexStr !== null && cardHandIndexStr !== "") {
+                                const cardHandIndex = parseInt(cardHandIndexStr, 10);
+                                if (!isNaN(cardHandIndex)) {
+                                    const isAttacking = confirm("Это атакующая карта? (ОК=Да, Отмена=Нет/Защита)");
+                                    if (isAttacking) {
+                                        makeMoveClient('attack', { card_indices: [cardHandIndex] });
+                                    } else {
+                                        const tableCardIndexToBeat = prompt("Введите индекс карты на столе, которую бьете (0, 1, ...):");
+                                        if (tableCardIndexToBeat !== null && tableCardIndexToBeat !== "") {
+                                        makeMoveClient('defend', { 
+                                            attack_card_table_index: parseInt(tableCardIndexToBeat), 
+                                            defense_card_hand_index: cardHandIndex 
+                                        });
+                                        } else {
+                                            alert("Индекс карты на столе не указан для защиты.");
+                                        }
+                                    }
+
+                                } else {
+                                    console.error("parseInt failed. 'cardHandIndexStr' was:", cardHandIndexStr);
+                                }
+                            } else {
+                                console.error("Атрибут data-hand-index пуст или отсутствует. Value:", cardHandIndexStr);
+                            }
+                        }
+                    });
+                }
+
+                const passBitoButton = document.getElementById('action-pass-bito');
+                if (passBitoButton) {
+                    passBitoButton.addEventListener('click', function() {
+                        makeMoveClient('pass_bito');
+                    });
+                }
+
+                const takeCardsButton = document.getElementById('action-take');
+                if (takeCardsButton) {
+                    takeCardsButton.addEventListener('click', function() {
+                        makeMoveClient('take');
+                    });
+                }
+        
 
         function setupAjaxForm(formId, successCallback, errorCallback) {
             const form = document.getElementById(formId);
