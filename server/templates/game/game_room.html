@@ -67,19 +67,24 @@
         {% for p_state in game_state.players %}
             {% if p_state.id == user.id %} {# Отображаем карты только для текущего пользователя #}
                 {% if p_state.cards %}
-                    {% for card in p_state.cards %}
-                        <div class="card-wrapper card-in-hand" data-hand-index="{{ card.hand_idx }}">
-                            {% if card.image_url %}
-                                <img src="{{ card.image_url }}" 
-                                     alt="{{ card.rank }} {{ card.suit }}" 
-                                     title="{{ card.rank }} {{ card.suit }} (индекс {{ card.hand_idx }})" 
-                                     class="game-card-image">
-                            {% else %}
-                                {{ card.rank }} {{ card.suit }}
-                            {% endif %}
-                            <br><small>(idx: {{ card.hand_idx }})</small>
-                        </div>
-                    {% endfor %}
+                {% for card in p_state.cards %}
+                <div class="card-wrapper card-in-hand" data-hand-index="{{ card.hand_index }}">
+                    <!-- ДЛЯ ОТЛАДКИ: выводим все содержимое card -->
+                    <p style="font-size: 0.7em; background-color: #eee; padding: 2px; margin: 0;">
+                        DEBUG card data: {{ card|pprint }} <!-- Используем pprint или просто {{ card }} -->
+                    </p>
+                    <!-- КОНЕЦ ОТЛАДКИ -->
+                    {% if card.image_url %}
+                        <img src="{{ card.image_url }}" 
+                             alt="{{ card.rank }} {{ card.suit }}" 
+                             title="{{ card.rank }} {{ card.suit }} (индекс {{ card.hand_index }})"
+                             class="game-card-image">
+                    {% else %}
+                        {{ card.rank }} {{ card.suit }}
+                    {% endif %}
+                    <br><small>(idx: {{ card.hand_index }})</small>
+                </div>
+            {% endfor %}
                 {% else %}
                     <p>У вас нет карт.</p>
                 {% endif %}

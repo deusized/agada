@@ -3,6 +3,15 @@ from django.conf import settings
 from django.urls import reverse
 from django.utils import timezone
 
+# game/models.py
+from django.db import models, transaction
+from django.conf import settings
+from django.urls import reverse
+from django.utils import timezone
+import logging
+logger = logging.getLogger(__name__)
+
+
 class GameRoom(models.Model):
     STATUS_WAITING = 'waiting'
     STATUS_PLAYING = 'playing'
@@ -64,77 +73,152 @@ class GameRoom(models.Model):
     @property
     def is_full(self):
         return self.players.count() >= self.max_players
+    
+    @property # Добавил это свойство для удобства
+    def min_players_for_start(self):
+        return 2 # Или другое значение, если нужно
 
     def save(self, *args, **kwargs):
         if not self.name and self.creator:
-            self.name = f"Игра {self.creator.username} (Ставка: {self.bet_amount})"
+            # Можно добавить проверку, чтобы имя не перезаписывалось при каждом save, если оно уже есть
+            if not self.pk or not GameRoom.objects.filter(pk=self.pk).exists() or not self.name:
+                 self.name = f"Игра {self.creator.username} (Ставка: {self.bet_amount})"
         super().save(*args, **kwargs)
 
     def start_game(self):
         """Начинает игру, если условия соблюдены."""
-        if self.players.count() >= 2 and self.status == self.STATUS_WAITING and self.players.count() <= self.max_players :
-            self.status = self.STATUS_PLAYING
-            self.save(update_fields=['status'])
-            return True
-        return False
+        from .game_logic import DurakGame 
+        if self.status != self.STATUS_WAITING:
+            logger.warning(f"Attempt to start game for room {self.id} not in WAITING status (current: {self.status})")
+            return False
+        
+        if self.players.count() < self.min_players_for_start:
+            logger.warning(f"Attempt to start game {self.id} with {self.players.count()} players, needs {self.min_players_for_start}.")
+            return False
+        
+        if self.players.count() > self.max_players:
+            logger.warning(f"Attempt to start game {self.id} with {self.players.count()} players, but max is {self.max_players}.")
+            return False
+
+        try:
+            with transaction.atomic():
+                game_logic_instance = DurakGame(self) 
+                
+                # Если экземпляр Game еще не создан в БД (game_model_instance is None)
+                if not game_logic_instance.game_model_instance:
+                    # Вот здесь происходит раздача карт, создание колоды, определение козыря и создание Game модели
+                    game_logic_instance.initialize_new_game_setup() 
+                    
+                    # Проверка, что initialize_new_game_setup действительно создал game_model_instance
+                    if not game_logic_instance.game_model_instance:
+                        logger.error(f"Failed to initialize game_model_instance for room {self.id} after calling initialize_new_game_setup.")
+                        # Транзакция будет отменена из-за исключения или явного return False
+                        return False 
+                else:
+                    logger.warning(f"Game model instance (ID: {game_logic_instance.game_model_instance.id}) already exists for room {self.id} which is in WAITING status. This is unusual. Proceeding to set room to PLAYING.")
+                
+                self.status = self.STATUS_PLAYING
+                self.save(update_fields=['status'])
+                
+                # Логируем ID созданной или существующей Game модели для отладки
+                game_instance_id_log = game_logic_instance.game_model_instance.id if game_logic_instance.game_model_instance else 'None (Error!)'
+                logger.info(f"Game started successfully for room {self.id}. Game instance ID: {game_instance_id_log}")
+                
+                # Здесь обычно отправляется WebSocket уведомление игрокам о начале игры
+                return True
+        except Exception as e:
+            logger.error(f"Error starting game for room {self.id}: {e}", exc_info=True)
+            # Транзакция будет отменена автоматически при исключении
+            return False
 
     def end_game(self, winner=None, loser=None, is_draw=False):
         """Завершает игру, обновляет статусы и балансы."""
-        if self.status == self.STATUS_FINISHED:
+        if self.status == self.STATUS_FINISHED: # Уже завершена
+            logger.info(f"Game room {self.id} is already finished. Skipping end_game call.")
             return
 
         with transaction.atomic():
             self.status = self.STATUS_FINISHED
-            self.winner = winner
-            self.save(update_fields=['status', 'winner'])
+            if winner and not is_draw: # Устанавливаем победителя только если он есть и это не ничья
+                self.winner = winner
+            
+            # Сохраняем статус и победителя комнаты
+            update_fields_room = ['status']
+            if self.winner_id: # Если self.winner был установлен
+                update_fields_room.append('winner')
+            self.save(update_fields=update_fields_room)
 
-            all_players_in_room = list(self.players.all())
+            # Обновление статистики и балансов игроков
+            all_players_in_room = list(self.players.all()) # Получаем всех, кто был в комнате
 
             if not is_draw and winner and self.bet_amount > 0:
-                total_pot = self.bet_amount * len(all_players_in_room)
+                total_pot = self.bet_amount * len(all_players_in_room) # Ставка каждого игрока
                 winner.cash += total_pot
                 winner.games_won += 1
                 winner.save(update_fields=['cash', 'games_won'])
+                logger.info(f"Player {winner.username} won {total_pot} in room {self.id}")
                 
-            elif is_draw and self.bet_amount > 0:
+            elif is_draw and self.bet_amount > 0: # Если ничья, возвращаем ставки
                 for player_obj in all_players_in_room:
-                    player_obj.cash += self.bet_amount
+                    player_obj.cash += self.bet_amount # Возвращаем ставку
                     player_obj.save(update_fields=['cash'])
+                logger.info(f"Draw in room {self.id}. Bets ({self.bet_amount}) returned to players.")
             
+            # Обновляем игры сыграно и сбрасываем current_room
             for player_obj in all_players_in_room:
                 player_obj.games_played += 1
                 if player_obj.current_room == self:
                     player_obj.current_room = None
+                # Сохраняем изменения для каждого игрока
                 player_obj.save(update_fields=['games_played', 'current_room'])
+            
+            logger.info(f"Game {self.id} ended. Winner: {winner.username if winner and not is_draw else 'Draw' if is_draw else 'N/A (No winner/No bets)'}")
+            # Очистка активности игроков для этой комнаты
+            PlayerActivity.objects.filter(room=self).delete()
+
 
     def cancel_game(self):
         """Отменяет ожидающую игру и возвращает ставки."""
-        if self.status == self.STATUS_WAITING:
-            with transaction.atomic():
-                self.status = self.STATUS_CANCELLED
-                self.save(update_fields=['status'])
-                
-                if self.bet_amount > 0:
-                    for player_obj in self.players.all():
-                        player_obj.cash += self.bet_amount
-                        if player_obj.current_room == self:
-                            player_obj.current_room = None
-                        player_obj.save(update_fields=['cash', 'current_room'])
-                
-                self.players.clear()
+        if self.status != self.STATUS_WAITING:
+            logger.warning(f"Attempt to cancel room {self.id} not in WAITING status (current: {self.status})")
+            return
 
-    def clean_up_inactive_waiting_room(self, timeout_seconds=300): # Например, 5 минут
+        with transaction.atomic():
+            self.status = self.STATUS_CANCELLED # Используем согласованное имя статуса
+            self.save(update_fields=['status'])
+            
+            if self.bet_amount > 0:
+                for player_obj in self.players.all():
+                    player_obj.cash += self.bet_amount
+                    if player_obj.current_room == self:
+                        player_obj.current_room = None
+                    player_obj.save(update_fields=['cash', 'current_room'])
+            else: # Если ставок не было, все равно обнуляем current_room
+                 for player_obj in self.players.all():
+                    if player_obj.current_room == self:
+                        player_obj.current_room = None
+                    player_obj.save(update_fields=['current_room'])
+            
+            logger.info(f"Game room {self.id} cancelled.")
+            PlayerActivity.objects.filter(room=self).delete()
+
+
+    def clean_up_inactive_waiting_room(self, timeout_seconds=300):
         """Удаляет/отменяет ОЖИДАЮЩУЮ комнату, если в ней давно нет активных игроков."""
         if self.status == self.STATUS_WAITING:
+            # Проверяем, есть ли хоть один игрок с недавней активностью
             recent_activity_exists = PlayerActivity.objects.filter(
                 room=self,
+                is_active=True, # Только тех, кто помечен как активный
                 last_ping__gte=timezone.now() - timezone.timedelta(seconds=timeout_seconds)
             ).exists()
 
             if not recent_activity_exists and self.players.count() > 0:
+                logger.info(f"Canceling inactive waiting room {self.id} due to player inactivity.")
                 self.cancel_game()
                 return True
             elif self.players.count() == 0 and (timezone.now() - self.created_at).total_seconds() > timeout_seconds:
+                logger.info(f"Deleting empty and old waiting room {self.id}.")
                 self.delete()
                 return True
         return False

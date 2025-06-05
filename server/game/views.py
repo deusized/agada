@@ -1,4 +1,4 @@
-from django.http import JsonResponse, Http404
+from django.http import JsonResponse
 from django.contrib.auth.decorators import login_required
 from django.views.decorators.http import require_POST
 from django.shortcuts import render, redirect, get_object_or_404
@@ -8,12 +8,11 @@ from django.db import transaction, models
 from django.db.models import Count
 from django.contrib import messages
 from django.forms import Form, IntegerField, CharField
-
 from .models import GameRoom, PlayerActivity
 from players.models import Player
 from .game_logic import DurakGame
 import logging
-
+import json
 logger = logging.getLogger(__name__)
 
 class CreateRoomForm(Form):
@@ -27,119 +26,98 @@ def lobby_view(request):
                             .annotate(players_count=Count('players'))\
                             .filter(players_count__lt=models.F('max_players'))\
                             .exclude(players=request.user)\
-                            .order_by('-created_at')[:20] # Показать последние 20
+                            .order_by('-created_at')[:20]
 
     context = {
         'rooms': rooms,
-        'user_balance': request.user.cash, # request.user - это ваш players.models.Player
+        'user_balance': request.user.cash,
     }
     return render(request, 'game/lobby.html', context)
 
 @login_required
 def create_room(request):
-    """
-    Создание новой игровой комнаты.
-    GET-запрос: отображает форму.
-    POST-запрос: обрабатывает форму и создает комнату.
-    """
     if request.method == 'POST':
         form = CreateRoomForm(request.POST)
         if form.is_valid():
             max_players = form.cleaned_data['max_players']
             bet_amount = form.cleaned_data['bet_amount']
             name = form.cleaned_data.get('name')
-            if not name: # Если имя не указано, генерируем по умолчанию
+            if not name:
                 name = f"Игра {request.user.username}"
 
-            # Проверка баланса пользователя
             if bet_amount > request.user.cash:
                 messages.error(request, 'Недостаточно средств на счете для такой ставки.')
-                # Возвращаем на ту же страницу с ошибкой
                 return render(request, 'game/create_room.html', {
                     'form': form,
-                    'max_players_range': range(2, 5), # Для удобства в шаблоне
+                    'max_players_range': range(2, 5),
                     'max_bet': request.user.cash,
                 })
 
-            # Проверка, не участвует ли игрок уже в другой активной или ожидающей комнате
             if GameRoom.objects.filter(players=request.user, status__in=[GameRoom.STATUS_WAITING, GameRoom.STATUS_PLAYING]).exists():
                 messages.error(request, 'Вы уже находитесь в другой игре или ожидаете ее начала.')
-                return redirect('game:lobby') # Редирект в лобби
+                return redirect('game:lobby')
 
             try:
-                with transaction.atomic(): # Используем транзакцию для атомарности операций
-                    # Создаем комнату
+                with transaction.atomic():
                     room = GameRoom.objects.create(
                         name=name,
                         creator=request.user,
                         max_players=max_players,
                         bet_amount=bet_amount,
-                        status=GameRoom.STATUS_WAITING # Начальный статус
+                        status=GameRoom.STATUS_WAITING
                     )
-                    # Добавляем создателя в список игроков комнаты
                     room.players.add(request.user)
                     
-                    # Обновляем current_room у игрока
                     request.user.current_room = room
-                    
-                    # Списываем ставку с баланса игрока
                     if bet_amount > 0:
                         request.user.cash -= bet_amount
+                    request.user.save(update_fields=['cash', 'current_room'])
                     
-                    request.user.save(update_fields=['cash', 'current_room']) # Сохраняем только измененные поля
-                    
-                    # Создаем запись об активности игрока в этой комнате
                     PlayerActivity.objects.create(
                         player=request.user,
                         room=room,
                         is_active=True
                     )
                     
+                    # Game itself (DurakGame logic, card dealing) is NOT initialized here.
+                    # It will be initialized when room.start_game() is called.
+                    
                     messages.success(request, f'Комната "{room.name}" успешно создана!')
-                    return redirect('game:game_room', room_id=room.id) # Перенаправляем в комнату
+                    return redirect('game:game_room', room_id=room.id)
             except Exception as e:
                 logger.error(f"Ошибка при создании комнаты пользователем {request.user.username}: {e}")
                 messages.error(request, "Произошла ошибка при создании комнаты. Попробуйте позже.")
-                # Остаемся на странице создания или редиректим в лобби
                 return render(request, 'game/create_room.html', {
-                    'form': form, # Возвращаем форму с введенными данными
+                    'form': form,
                     'max_players_range': range(2, 5),
                     'max_bet': request.user.cash,
                 })
         else:
-            # Форма невалидна, отображаем ошибки на странице
             messages.error(request, "Пожалуйста, исправьте ошибки в форме.")
-    else: # GET-запрос
+    else:
         form = CreateRoomForm()
 
     context = {
         'form': form,
-        'max_players_range': range(2, 5), # Для генерации <select> или ползунка
+        'max_players_range': range(2, 5),
         'max_bet': request.user.cash,
     }
     return render(request, 'game/create_room.html', context)
 
 
 @login_required
-@transaction.atomic # Используем транзакцию, т.к. меняем баланс и состояние комнаты
+@transaction.atomic
 def join_game(request, game_id):
-    """
-    Присоединение к существующей игровой комнате.
-    Ожидается POST-запрос (например, от кнопки в списке лобби).
-    Возвращает JSON для обработки через AJAX или редиректит.
-    """
     if request.method != 'POST':
-        # Если это не POST, можно вернуть ошибку или редиректить
         messages.error(request, "Неверный метод запроса для присоединения к игре.")
         return redirect('game:lobby')
 
     room = get_object_or_404(GameRoom, id=game_id)
-    user = request.user # request.user это уже экземпляр вашей модели Player
+    user = request.user
 
-    # Проверки перед присоединением
     if room.status != GameRoom.STATUS_WAITING:
         messages.error(request, 'Игра уже началась или завершена.')
-        return redirect('game:lobby') # или JsonResponse, если это чистый AJAX endpoint
+        return redirect('game:lobby')
         
     if user in room.players.all():
         messages.info(request, 'Вы уже находитесь в этой комнате.')
@@ -154,16 +132,13 @@ def join_game(request, game_id):
         return redirect('game:lobby')
     
     try:
-        # Добавляем игрока в комнату
         room.players.add(user)
         user.current_room = room
         
-        # Списываем ставку
         if room.bet_amount > 0:
             user.cash -= room.bet_amount
         user.save(update_fields=['cash', 'current_room'])
         
-        # Обновляем активность
         PlayerActivity.objects.update_or_create(
             player=user, room=room,
             defaults={'is_active': True, 'last_ping': timezone.now()}
@@ -171,16 +146,18 @@ def join_game(request, game_id):
         
         messages.success(request, f'Вы успешно присоединились к комнате "{room.name}"!')
         
-        # Автоматический старт игры при заполнении комнаты
         game_started_auto = False
-        if room.players.count() >= room.max_players: # Используем >= на случай, если вдруг больше игроков
-            if room.start_game(): # Метод start_game в модели GameRoom должен вернуть True/False
+        if room.players.count() >= room.max_players:
+            # room.start_game() is a method on GameRoom model
+            # It should handle DurakGame initialization and card dealing.
+            if room.start_game(): 
                 game_started_auto = True
                 messages.info(request, "Комната заполнена, игра начинается!")
             else:
+                # start_game might fail if, e.g., min_players not met (though max_players implies min met)
+                # or some other internal error during game setup.
                 messages.error(request, "Не удалось автоматически начать игру, хотя комната заполнена.")
         
-        # Если это был AJAX запрос, можно вернуть JsonResponse
         if request.headers.get('x-requested-with') == 'XMLHttpRequest':
             return JsonResponse({
                 'success': True,
@@ -199,22 +176,17 @@ def join_game(request, game_id):
 
 @login_required
 def game_room(request, room_id):
-    """
-    Представление игровой комнаты. Здесь будет основная логика отображения игры
-    и взаимодействия через WebSockets.
-    """
     try:
-        # Используем select_related/prefetch_related для оптимизации запросов к связанным моделям
         room = GameRoom.objects.select_related('creator').prefetch_related('players').get(id=room_id)
     except GameRoom.DoesNotExist:
-        raise Http404("Игровая комната не найдена.") # Или редирект с сообщением
+        messages.error(request, "Игровая комната не найдена.")
+        return redirect('game:lobby') # Or raise Http404
     
     user = request.user
     if user not in room.players.all():
         messages.error(request, "Вы не являетесь участником этой игры.")
         return redirect('game:lobby')
     
-    # Обновляем активность игрока
     PlayerActivity.objects.update_or_create(
         player=user, room=room,
         defaults={'is_active': True, 'last_ping': timezone.now()}
@@ -223,32 +195,35 @@ def game_room(request, room_id):
     game_instance_logic = None
     game_state_for_template = None
 
-    # Инициализируем или загружаем DurakGame.
-    # Конструктор DurakGame сам заботится о создании/загрузке Game из БД.
     try:
+        # DurakGame constructor will load existing game state if Game model exists for this room,
+        # or will be in a pre-initialized state if not (e.g., waiting for start).
         game_instance_logic = DurakGame(room)
-        if game_instance_logic:
-            game_state_for_template = game_instance_logic.get_game_state(for_player_user_obj=request.user)
+        game_state_for_template = game_instance_logic.get_game_state(for_player_user_obj=request.user)
     except Exception as e:
-        logger.error(f"Ошибка при инициализации DurakGame для комнаты {room.id}: {e}")
+        logger.error(f"Ошибка при инициализации/загрузке DurakGame для комнаты {room.id}: {e}")
         messages.error(request, "Произошла ошибка при загрузке состояния игры.")
+        # game_state_for_template will remain None or be a basic error state
+        game_state_for_template = { # Fallback state
+            'room_id': str(room.id), 
+            'status': room.status, 
+            'error': "Ошибка загрузки состояния игры"
+        }
+
 
     context = {
         'room': room,
-        'game_state': game_state_for_template, # Состояние игры для первоначальной отрисовки
+        'game_state': game_state_for_template,
         'is_creator': user == room.creator,
-        'user_id_json': user.id, # Передаем ID пользователя для JavaScript
-        'room_id_json': str(room.id), # Передаем ID комнаты (UUID или int) как строку
+        'user_id_json': user.id,
+        'room_id_json': str(room.id),
     }
     return render(request, 'game/game_room.html', context)
 
 
 @login_required
-@require_POST # Это действие должно быть POST-запросом
+@require_POST
 def start_game(request, room_id):
-    """
-    Ручной запуск игры создателем комнаты. (Обычно AJAX)
-    """
     room = get_object_or_404(GameRoom, id=room_id)
     if request.user != room.creator:
         return JsonResponse({'success': False, 'error': 'Только создатель может начать игру.'}, status=403)
@@ -256,23 +231,19 @@ def start_game(request, room_id):
     if room.status != GameRoom.STATUS_WAITING:
         return JsonResponse({'success': False, 'error': 'Игра уже начата или завершена.'})
     
-    if room.players.count() < 2: # Минимальное количество игроков
-        return JsonResponse({'success': False, 'error': 'Недостаточно игроков (минимум 2).'})
+    if room.players.count() < getattr(room, 'min_players_for_start', 2):
+        return JsonResponse({'success': False, 'error': f'Недостаточно игроков (минимум {getattr(room, "min_players_for_start", 2)}).'})
     
-    if room.start_game(): # Метод в модели GameRoom
-        # Здесь можно отправить сигнал или WebSocket сообщение о старте игры
+    if room.start_game():
         return JsonResponse({'success': True, 'message': 'Игра успешно начата!'})
     else:
-        return JsonResponse({'success': False, 'error': 'Не удалось начать игру.'})
+        return JsonResponse({'success': False, 'error': 'Не удалось начать игру. Проверьте логи сервера.'})
 
 
 @login_required
-@require_POST # Безопаснее делать такие действия через POST
+@require_POST
 @transaction.atomic
 def leave_room(request, room_id):
-    """
-    Выход игрока из комнаты. (Обычно AJAX)
-    """
     room = get_object_or_404(GameRoom, id=room_id)
     user = request.user
     
@@ -280,15 +251,14 @@ def leave_room(request, room_id):
         return JsonResponse({'success': False, 'error': 'Вы не в этой комнате.'}, status=403)
     
     try:
-        # Если игра еще не началась, и были ставки, можно вернуть ставку
         returned_bet = False
         if room.status == GameRoom.STATUS_WAITING and room.bet_amount > 0:
             user.cash += room.bet_amount
             user.save(update_fields=['cash'])
             returned_bet = True
         
-        room.players.remove(user) # Удаляем игрока из списка игроков комнаты
-        if user.current_room == room: # Если текущая комната игрока - эта
+        room.players.remove(user)
+        if user.current_room == room:
             user.current_room = None
             user.save(update_fields=['current_room'])
 
@@ -298,20 +268,44 @@ def leave_room(request, room_id):
         if returned_bet:
             message += " Ваша ставка возвращена."
 
-        # Если создатель покидает комнату, которая ожидает, игра отменяется
-        if user == room.creator and room.status == GameRoom.STATUS_WAITING:
-            room.cancel_game() # Метод в модели GameRoom, который меняет статус и возвращает ставки всем
-            # Оповестить остальных игроков через WebSocket, что комната отменена
-            return JsonResponse({'success': True, 'room_canceled': True, 'message': 'Комната отменена, так как создатель вышел.'})
+        room_canceled_by_leave = False
+        if user == room.creator:
+            if hasattr(room, 'cancel_game'): # Assumes cancel_game method on GameRoom model
+                room.cancel_game() 
+                room_canceled_by_leave = True
+                message = 'Комната отменена, так как создатель вышел.'
+            else: # Fallback if model method not present
+                room.status = GameRoom.STATUS_CANCELLED 
+                room.save(update_fields=['status'])
+                # Basic refund if model method doesn't handle it
+                for p in room.players.all(): # refund remaining players if creator leaves
+                    if room.bet_amount > 0:
+                        p.cash += room.bet_amount
+                        p.save(update_fields=['cash'])
+                if room.bet_amount > 0 and not returned_bet: # if creator's bet wasn't returned yet
+                     user.cash += room.bet_amount
+                     user.save(update_fields=['cash'])
 
-        # Если после выхода комната (ожидающая) стала пустой, отменяем ее
-        if room.status == GameRoom.STATUS_WAITING and room.players.count() == 0:
-            room.cancel_game()
-
+        elif room.status == GameRoom.STATUS_WAITING and room.players.count() == 0:
+            if hasattr(room, 'cancel_game'):
+                room.cancel_game()
+                room_canceled_by_leave = True # Or a different message
+            else:
+                room.status = GameRoom.STATUS_CANCELLED
+                room.save(update_fields=['status'])
+        
         if room.status == GameRoom.STATUS_PLAYING:
-            pass
-            
-        return JsonResponse({'success': True, 'message': message})
+            # Handle player leaving mid-game. This might involve:
+            # - Forfeiting the game for this player.
+            # - Ending the game if too few players remain.
+            # - Alerting other players.
+            # This logic would typically be in DurakGame or GameRoom model.
+            # For now, just logging.
+            logger.info(f"Player {user.username} left active game room {room.id}. Game state might need update.")
+            # Example: game_logic = DurakGame(room); game_logic.handle_player_quit(user);
+            pass # Placeholder for more complex logic
+
+        return JsonResponse({'success': True, 'message': message, 'room_canceled': room_canceled_by_leave})
     
     except Exception as e:
         logger.error(f"Ошибка при выходе пользователя {user.username} из комнаты {room.id}: {str(e)}")
@@ -319,38 +313,42 @@ def leave_room(request, room_id):
 
 
 @login_required
-@require_POST # Завершение игры - изменяющее состояние действие
+@require_POST
 @transaction.atomic
 def end_game(request, room_id):
-    """
-    Принудительное завершение игры (например, администратором или по каким-то условиям).
-    Обычно логика завершения игры (определение победителя) находится в DurakGame.
-    Это view может быть для административных целей или если игра "зависла".
-    """
     room = get_object_or_404(GameRoom, id=room_id)
     
-    # Проверка прав (например, только создатель или админ)
     if not (request.user == room.creator or request.user.is_staff):
         return JsonResponse({'success': False, 'error': 'У вас нет прав для завершения этой игры.'}, status=403)
     
     if room.status != GameRoom.STATUS_PLAYING:
         return JsonResponse({'success': False, 'error': 'Игра не находится в активном состоянии для завершения.'}, status=400)
     
-    winner_id = request.POST.get('winner_id') # Предполагаем, что ID победителя передается
+    winner_id = request.POST.get('winner_id')
     winner = None
     if winner_id:
         try:
             winner = room.players.get(id=winner_id)
-        except Player.DoesNotExist: # Player из players.models
+        except Player.DoesNotExist:
             return JsonResponse({'success': False, 'error': 'Указанный победитель не найден в этой комнате.'}, status=400)
     
     try:
-        room.end_game(winner=winner) # Метод в модели GameRoom, который обновляет балансы, статус и т.д.
-        # Оповестить игроков через WebSocket о завершении игры
+        # Assumes end_game method on GameRoom model that updates balances, status etc.
+        # and interacts with DurakGame if needed.
+        if hasattr(room, 'end_game'):
+            room.end_game(winner=winner) 
+        else: # Basic fallback
+            room.status = GameRoom.STATUS_FINISHED
+            if winner:
+                room.winner = winner
+            # Pot distribution logic would be here if not in model method
+            room.save()
+
+        # Optionally, send a WebSocket message about game end
         return JsonResponse({
             'success': True,
             'message': f'Игра в комнате "{room.name}" завершена.',
-            'winner_username': winner.username if winner else "Ничья или победитель не указан"
+            'winner_username': winner.username if winner else "Победитель не указан или ничья"
         })
     except Exception as e:
         logger.error(f"Ошибка при завершении игры {room.id} пользователем {request.user.username}: {str(e)}")
@@ -359,12 +357,8 @@ def end_game(request, room_id):
 
 @login_required
 def game_status(request, room_id):
-    """
-    Получение текущего состояния игры (обычно AJAX-запрос для обновления информации
-    на странице game_room, если не используются WebSockets для всего).
-    """
     try:
-        room = GameRoom.objects.select_related('creator').prefetch_related('players__profile').get(id=room_id)
+        room = GameRoom.objects.select_related('creator').prefetch_related('players').get(id=room_id)
     except GameRoom.DoesNotExist:
         return JsonResponse({'success': False, 'error': 'Комната не найдена.'}, status=404)
 
@@ -373,19 +367,10 @@ def game_status(request, room_id):
     
     game_state_data = None
     try:
-        if room.status == GameRoom.STATUS_PLAYING or room.status == GameRoom.STATUS_FINISHED:
-            # Для активной или завершенной игры, состояние берется из DurakGame
-            game_logic = DurakGame(room) # Конструктор загрузит или инициализирует состояние
-            game_state_data = game_logic.get_game_state(for_player_user_obj=request.user)
-        else: # Для ожидающей комнаты, можно сформировать упрощенное состояние
-            game_state_data = {
-                'room_id': str(room.id),
-                'status': room.status,
-                'players': [{'id': p.id, 'username': p.username, 'is_creator': p == room.creator} for p in room.players.all()],
-                'max_players': room.max_players,
-                'bet_amount': room.bet_amount,
-                'is_creator': request.user == room.creator,
-            }
+        # DurakGame constructor handles loading or pre-init state.
+        game_logic = DurakGame(room)
+        game_state_data = game_logic.get_game_state(for_player_user_obj=request.user)
+            
     except Exception as e:
         logger.error(f"Ошибка при получении статуса игры для комнаты {room.id}: {e}")
         return JsonResponse({'success': False, 'error': 'Ошибка при получении состояния игры.'}, status=500)
@@ -394,23 +379,89 @@ def game_status(request, room_id):
 
 
 @login_required
-@require_POST # Ping обычно не должен менять состояние, но POST безопаснее если есть side-effects
+@require_POST
+def make_move_view(request, room_id):
+    room = get_object_or_404(GameRoom, id=room_id)
+    user = request.user
+
+    if user not in room.players.all():
+        return JsonResponse({'success': False, 'error': 'Вы не являетесь участником этой игры.'}, status=403)
+
+    if room.status != GameRoom.STATUS_PLAYING:
+        return JsonResponse({'success': False, 'error': 'Игра не активна.'}, status=400)
+
+    try:
+        data = json.loads(request.body)
+        action_type = data.get('action_type')
+        
+        game_logic = DurakGame(room)
+
+        if not game_logic.game_model_instance:
+             return JsonResponse({'success': False, 'error': 'Состояние игры не найдено или не инициализировано.'}, status=500)
+
+        response_data = {'success': False, 'message': 'Неизвестное действие или ошибка.'}
+
+        if action_type == 'attack':
+            card_indices = data.get('card_indices') 
+            if card_indices is None or not isinstance(card_indices, list):
+                return JsonResponse({'success': False, 'error': 'Не указаны карты для атаки.'}, status=400)
+            
+            try:
+                card_indices = [int(idx) for idx in card_indices]
+            except ValueError:
+                return JsonResponse({'success': False, 'error': 'Индексы карт должны быть числами.'}, status=400)
+
+            result = game_logic.attack(user, card_indices)
+            response_data.update(result)
+
+        elif action_type == 'defend':
+            attack_card_table_index = data.get('attack_card_table_index')
+            defense_card_hand_index = data.get('defense_card_hand_index')
+            if attack_card_table_index is None or defense_card_hand_index is None:
+                 return JsonResponse({'success': False, 'error': 'Не указаны карты для защиты.'}, status=400)
+            try:
+                attack_card_table_index = int(attack_card_table_index)
+                defense_card_hand_index = int(defense_card_hand_index)
+            except ValueError:
+                return JsonResponse({'success': False, 'error': 'Индексы карт должны быть числами.'}, status=400)
+
+
+            result = game_logic.defend(user, attack_card_table_index, defense_card_hand_index)
+            response_data.update(result)
+
+        elif action_type == 'pass_bito':
+            result = game_logic.pass_or_bito_action(user)
+            response_data.update(result)
+            
+        elif action_type == 'take':
+            result = game_logic.take_cards_action(user)
+            response_data.update(result)
+        else:
+            return JsonResponse({'success': False, 'error': 'Неизвестный тип действия.'}, status=400)
+
+        return JsonResponse(response_data)
+
+    except json.JSONDecodeError:
+        return JsonResponse({'success': False, 'error': 'Некорректный JSON в теле запроса.'}, status=400)
+    except Exception as e:
+        logger.error(f"Ошибка при обработке хода в комнате {room_id} игроком {user.username}: {e}", exc_info=True)
+        return JsonResponse({'success': False, 'error': 'Внутренняя ошибка сервера при обработке хода.'}, status=500)
+
+
+@login_required
+@require_POST
 def ping(request, room_id):
-    """
-    Обновление времени последней активности пользователя в комнате.
-    Вызывается периодически со стороны клиента (AJAX).
-    """
     try:
         room = GameRoom.objects.get(id=room_id)
     except GameRoom.DoesNotExist:
         return JsonResponse({'success': False, 'error': 'Комната не найдена'}, status=404)
 
-    if request.user not in room.players.all():
-        return JsonResponse({'success': False, 'error': 'Вы не участник этой комнаты.'}) 
+    if not room.players.filter(id=request.user.id).exists():
+        return JsonResponse({'success': False, 'error': 'Вы не участник этой комнаты.'}, status=403) 
     
-    activity, created = PlayerActivity.objects.update_or_create(
+    PlayerActivity.objects.update_or_create(
         player=request.user,
-        room=room,
+        room_id=room_id,
         defaults={'is_active': True, 'last_ping': timezone.now()}
     )
 

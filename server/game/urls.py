@@ -20,4 +20,5 @@ urlpatterns = [
     # API для игрового процесса
     path('status/<int:room_id>/', views.game_status, name='game_status'),
     path('ping/<int:room_id>/', views.ping, name='ping'),
+    path('room/<int:room_id>/make_move/', views.make_move_view, name='make_move'),
 ]
