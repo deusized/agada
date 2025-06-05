@@ -119,3 +119,48 @@ body.dark .btn {
 body.dark .btn:hover {
     background-color: #1abc9c;
 }
+
+/* static/css/main.css */
+
+.game-card-image {
+    width: 70px;  /* Желаемая ширина карты */
+    height: 100px; /* Желаемая высота карты */
+    object-fit: cover; /* или 'contain', или 'fill', или 'scale-down' - поэкспериментируйте */
+    /* object-fit: cover; - обрежет изображение, чтобы заполнить размеры, сохранив пропорции */
+    /* object-fit: contain; - впишет все изображение в размеры, сохранив пропорции (могут быть пустые поля) */
+    /* object-fit: fill; - растянет изображение, чтобы заполнить размеры, исказив пропорции */
+    /* object-fit: scale-down; - выберет меньший из none или contain */
+    
+    border: 1px solid #ccc; /* Небольшая рамка для карт, опционально */
+    border-radius: 5px;    /* Скругленные углы, опционально */
+    vertical-align: middle; /* Для лучшего выравнивания, если карты в строке с текстом */
+}
+
+.card-in-hand .game-card-image {
+    cursor: pointer; /* Оставляем курсор для карт в руке */
+}
+
+/* Если нужно немного разные размеры для карт на столе и в руке */
+.table-card-image {
+    width: 60px;
+    height: 85px;
+    object-fit: cover;
+    border: 1px solid #b0b0b0;
+    border-radius: 4px;
+    margin: 2px;
+}
+
+/* Контейнеры для карт, чтобы можно было управлять их расположением */
+.player-hand-container,
+.game-table-container {
+    display: flex; /* Позволяет легко выравнивать карты в ряд */
+    flex-wrap: wrap; /* Переносить карты на следующую строку, если не помещаются */
+    gap: 5px;      /* Промежуток между картами */
+    margin-bottom: 15px;
+}
+
+.card-wrapper { /* Обертка для каждой карты, если нужно добавить отступы или эффекты */
+    display: inline-block; /* или flex-item, если внутри flex-контейнера */
+    margin: 2px;
+    text-align: center;
+}

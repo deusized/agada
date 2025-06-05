@@ -6,10 +6,9 @@ def register_view(request):
     if request.method == 'POST':
         form = PlayerRegistrationForm(request.POST)
         if form.is_valid():
-            user = form.save()  # Создается Player, а не User
+            user = form.save()
             login(request, user)
-            return redirect('lobby')
+            return redirect('lobby') 
     else:
         form = PlayerRegistrationForm()
-    
     return render(request, 'registration/register.html', {'form': form})
